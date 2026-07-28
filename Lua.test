@@ -1,0 +1,191 @@
+-- God Mode + Draggable Button + Fixed MaxHealth
+-- Strong Anti-Damage + Anti-Invisibility
+-- for Delta Executor
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local GOD_HEALTH = 9e9          -- Fixed high finite value
+local godModeEnabled = false
+local connection
+
+-- ========== GUI ==========
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GodModeGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local Button = Instance.new("TextButton")
+Button.Name = "GodModeButton"
+Button.Size = UDim2.new(0, 170, 0, 48)
+Button.Position = UDim2.new(0.5, -85, 0.85, 0)
+Button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Button.BorderSizePixel = 0
+Button.Text = "God Mode: OFF"
+Button.TextColor3 = Color3.fromRGB(255, 60, 60)
+Button.TextScaled = true
+Button.Font = Enum.Font.GothamBold
+Button.Parent = ScreenGui
+Button.Active = true
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = Button
+
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Color3.fromRGB(255, 60, 60)
+UIStroke.Thickness = 2.5
+UIStroke.Parent = Button
+
+-- ========== Make Button Draggable ==========
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+Button.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Button.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+Button.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        -- handled below
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        Button.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- ========== Maximum Visibility Force ==========
+local function forceFullyVisible(character)
+    if not character then return end
+
+    for _, v in pairs(character:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Transparency = 0
+            v.LocalTransparencyModifier = 0
+        elseif v:IsA("Decal") or v:IsA("Texture") then
+            v.Transparency = 0
+        elseif v:IsA("Accessory") then
+            local handle = v:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") then
+                handle.Transparency = 0
+                handle.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end
+
+-- ========== God Mode Functions ==========
+local function applyGodMode(character)
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    humanoid.MaxHealth = GOD_HEALTH
+    humanoid.Health = GOD_HEALTH
+
+    pcall(function()
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+    end)
+
+    pcall(function()
+        humanoid.TakeDamage = function() end
+    end)
+
+    forceFullyVisible(character)
+end
+
+local function removeGodMode(character)
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    humanoid.MaxHealth = 100
+    humanoid.Health = 100
+
+    pcall(function()
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+    end)
+end
+
+-- ========== Toggle ==========
+local function toggleGodMode()
+    godModeEnabled = not godModeEnabled
+
+    if godModeEnabled then
+        Button.Text = "God Mode: ON"
+        Button.TextColor3 = Color3.fromRGB(60, 255, 100)
+        UIStroke.Color = Color3.fromRGB(60, 255, 100)
+
+        if LocalPlayer.Character then
+            applyGodMode(LocalPlayer.Character)
+        end
+
+        connection = RunService.Heartbeat:Connect(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                -- Force MaxHealth + Health every frame (fixed)
+                humanoid.MaxHealth = GOD_HEALTH
+                humanoid.Health = GOD_HEALTH
+            end
+
+            forceFullyVisible(char)
+        end)
+    else
+        Button.Text = "God Mode: OFF"
+        Button.TextColor3 = Color3.fromRGB(255, 60, 60)
+        UIStroke.Color = Color3.fromRGB(255, 60, 60)
+
+        if connection then
+            connection:Disconnect()
+            connection = nil
+        end
+
+        if LocalPlayer.Character then
+            removeGodMode(LocalPlayer.Character)
+        end
+    end
+end
+
+Button.MouseButton1Click:Connect(toggleGodMode)
+
+-- Re-apply on respawn
+LocalPlayer.CharacterAdded:Connect(function(character)
+    task.wait(0.4)
+    if godModeEnabled then
+        applyGodMode(character)
+    end
+end)
+
+print("God Mode loaded | Draggable button + Fixed MaxHealth")
