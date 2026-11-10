@@ -1,0 +1,319 @@
+-- Inventory (ModuleScript) -> place in ReplicatedStorage, name it "Inventory"
+-- Contains BOTH the server logic and the client UI.
+--
+-- Launchers (one line each):
+--   Script       in ServerScriptService:      require(game.ReplicatedStorage.Inventory)()
+--   LocalScript  in StarterPlayerScripts:     require(game.ReplicatedStorage.Inventory)()
+
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local VALID_ITEMS = { apple = true, sword = true, potion = true, shield = true }
+local MAX_PER_ITEM = 99
+
+---------------------------------------------------------------------
+-- SERVER
+---------------------------------------------------------------------
+local function runServer()
+	local DataStoreService = game:GetService("DataStoreService")
+
+	local ALLOW_CLIENT_ADD = true -- TESTING ONLY. Set false in a real game.
+	local COOLDOWN = 0.1
+	local store = DataStoreService:GetDataStore("PlayerInventory_v1")
+
+	local folder = Instance.new("Folder")
+	folder.Name = "InventoryRemotes"
+	folder.Parent = ReplicatedStorage
+
+	local actionFn = Instance.new("RemoteFunction")
+	actionFn.Name = "Action"
+	actionFn.Parent = folder
+
+	local changedEvent = Instance.new("RemoteEvent")
+	changedEvent.Name = "Changed"
+	changedEvent.Parent = folder
+
+	local inventories, lastRequest = {}, {}
+	local Inventory = {}
+
+	function Inventory.add(player, name, qty)
+		local items = inventories[player]
+		if not items then return false, "Inventory not loaded" end
+		if not VALID_ITEMS[name] then return false, "Unknown item" end
+		local new = (items[name] or 0) + qty
+		if new > MAX_PER_ITEM then return false, "Max " .. MAX_PER_ITEM .. " " .. name end
+		items[name] = new
+		changedEvent:FireClient(player, items)
+		return true
+	end
+
+	function Inventory.remove(player, name, qty)
+		local items = inventories[player]
+		if not items then return false, "Inventory not loaded" end
+		local current = items[name]
+		if not current then return false, "Item not found" end
+		if current < qty then return false, "Not enough " .. name end
+		items[name] = (current - qty > 0) and (current - qty) or nil
+		changedEvent:FireClient(player, items)
+		return true
+	end
+
+	local function load(player)
+		local data
+		local ok, err = pcall(function()
+			data = store:GetAsync("user_" .. player.UserId)
+		end)
+		if not ok then warn("Load failed for", player.Name, err) end
+
+		local items = {}
+		if type(data) == "table" then
+			for name, qty in pairs(data) do
+				if VALID_ITEMS[name] and type(qty) == "number" and qty > 0 then
+					items[name] = math.min(math.floor(qty), MAX_PER_ITEM)
+				end
+			end
+		end
+		inventories[player] = items
+		changedEvent:FireClient(player, items)
+	end
+
+	local function save(player)
+		local items = inventories[player]
+		if not items then return end
+		local ok, err = pcall(function()
+			store:SetAsync("user_" .. player.UserId, items)
+		end)
+		if not ok then warn("Save failed for", player.Name, err) end
+	end
+
+	Players.PlayerAdded:Connect(load)
+	for _, p in ipairs(Players:GetPlayers()) do task.spawn(load, p) end
+
+	Players.PlayerRemoving:Connect(function(player)
+		save(player)
+		inventories[player] = nil
+		lastRequest[player] = nil
+	end)
+
+	game:BindToClose(function()
+		for _, p in ipairs(Players:GetPlayers()) do save(p) end
+	end)
+
+	actionFn.OnServerInvoke = function(player, action, name, qty)
+		if action == "get" then
+			return true, inventories[player] or {}
+		end
+
+		local now = os.clock()
+		if lastRequest[player] and now - lastRequest[player] < COOLDOWN then
+			return false, "Slow down"
+		end
+		lastRequest[player] = now
+
+		if type(name) ~= "string" or not VALID_ITEMS[name] then return false, "Invalid item" end
+		if type(qty) ~= "number" or qty % 1 ~= 0 or qty < 1 or qty > 3 then return false, "Invalid amount" end
+
+		if action == "add" then
+			if not ALLOW_CLIENT_ADD then return false, "Not allowed" end
+			return Inventory.add(player, name, qty)
+		elseif action == "remove" then
+			return Inventory.remove(player, name, qty)
+		end
+		return false, "Unknown action"
+	end
+end
+
+---------------------------------------------------------------------
+-- CLIENT
+---------------------------------------------------------------------
+local function runClient()
+	local TweenService = game:GetService("TweenService")
+	local player = Players.LocalPlayer
+	local playerGui = player:WaitForChild("PlayerGui")
+
+	local remotes = ReplicatedStorage:WaitForChild("InventoryRemotes")
+	local actionFn = remotes:WaitForChild("Action")
+	local changedEvent = remotes:WaitForChild("Changed")
+
+	local items = {}
+
+	local defs = {
+		{ name = "apple",  color = Color3.fromRGB(230, 64, 64) },
+		{ name = "sword",  color = Color3.fromRGB(178, 190, 204) },
+		{ name = "potion", color = Color3.fromRGB(166, 90, 230) },
+		{ name = "shield", color = Color3.fromRGB(64, 140, 242) },
+	}
+	local MAX_BAR = 10
+
+	local function make(className, props, parent)
+		local obj = Instance.new(className)
+		for k, v in pairs(props) do obj[k] = v end
+		obj.Parent = parent
+		return obj
+	end
+
+	local function corner(parent, radius)
+		return make("UICorner", { CornerRadius = UDim.new(0, radius) }, parent)
+	end
+
+	local gui = make("ScreenGui", { Name = "InventoryGui", ResetOnSpawn = false }, playerGui)
+
+	local main = make("Frame", {
+		Size = UDim2.fromOffset(440, 400),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		BackgroundColor3 = Color3.fromRGB(26, 28, 36),
+	}, gui)
+	corner(main, 12)
+
+	make("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 36), Position = UDim2.fromOffset(0, 6),
+		BackgroundTransparency = 1, Text = "Inventory",
+		TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 22,
+	}, main)
+
+	local addBar = make("Frame", {
+		Size = UDim2.new(1, -24, 0, 40), Position = UDim2.fromOffset(12, 50),
+		BackgroundTransparency = 1,
+	}, main)
+	make("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+	}, addBar)
+
+	local list = make("Frame", {
+		Size = UDim2.new(1, -24, 0, 240), Position = UDim2.fromOffset(12, 102),
+		BackgroundTransparency = 1,
+	}, main)
+	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, list)
+
+	local emptyLabel = make("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 40), Position = UDim2.fromOffset(0, 90),
+		BackgroundTransparency = 1, Text = "Inventory is empty. Add something above!",
+		TextColor3 = Color3.fromRGB(130, 132, 142), Font = Enum.Font.Gotham, TextSize = 16,
+	}, main)
+
+	local messageLabel = make("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 1, -42),
+		BackgroundTransparency = 1, Text = "",
+		TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamMedium, TextSize = 16,
+	}, main)
+
+	local messageId = 0
+	local function say(text, isError)
+		messageId += 1
+		local myId = messageId
+		messageLabel.Text = text
+		messageLabel.TextColor3 = isError and Color3.fromRGB(255, 130, 130) or Color3.fromRGB(150, 255, 180)
+		task.delay(2.5, function()
+			if messageId == myId then messageLabel.Text = "" end
+		end)
+	end
+
+	local function request(action, name, qty)
+		local ok, result = actionFn:InvokeServer(action, name, qty)
+		if ok then
+			say((action == "add" and "Added " or "Removed ") .. qty .. " " .. name, false)
+		else
+			say("Error: " .. tostring(result), true)
+		end
+	end
+
+	local function makeRemoveButton(row, def, amount, xOffset)
+		local btn = make("TextButton", {
+			Size = UDim2.fromOffset(50, 36), Position = UDim2.new(0, xOffset, 0.5, -18),
+			BackgroundColor3 = Color3.fromRGB(64, 76, 102), Text = "-" .. amount,
+			TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 16,
+		}, row)
+		corner(btn, 8)
+		btn.Activated:Connect(function()
+			request("remove", def.name, amount)
+		end)
+	end
+
+	local function refresh()
+		for _, child in ipairs(list:GetChildren()) do
+			if child:IsA("Frame") then child:Destroy() end
+		end
+
+		local shown = 0
+		for i, def in ipairs(defs) do
+			local qty = items[def.name]
+			if qty then
+				shown += 1
+				local row = make("Frame", {
+					Size = UDim2.new(1, 0, 0, 56),
+					BackgroundColor3 = Color3.fromRGB(36, 39, 50), LayoutOrder = i,
+				}, list)
+				corner(row, 10)
+
+				corner(make("Frame", {
+					Size = UDim2.fromOffset(40, 40), Position = UDim2.fromOffset(8, 8),
+					BackgroundColor3 = def.color,
+				}, row), 8)
+
+				make("TextLabel", {
+					Size = UDim2.fromOffset(100, 22), Position = UDim2.fromOffset(58, 6),
+					BackgroundTransparency = 1, Text = def.name,
+					TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = Color3.new(1, 1, 1),
+					Font = Enum.Font.GothamBold, TextSize = 18,
+				}, row)
+
+				make("TextLabel", {
+					Size = UDim2.fromOffset(100, 18), Position = UDim2.fromOffset(58, 30),
+					BackgroundTransparency = 1, Text = "x" .. qty,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextColor3 = Color3.fromRGB(175, 178, 190),
+					Font = Enum.Font.Gotham, TextSize = 14,
+				}, row)
+
+				local barBg = make("Frame", {
+					Size = UDim2.fromOffset(120, 14), Position = UDim2.fromOffset(160, 21),
+					BackgroundColor3 = Color3.fromRGB(51, 56, 71),
+				}, row)
+				corner(barBg, 6)
+				local fill = make("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = def.color }, barBg)
+				corner(fill, 6)
+				TweenService:Create(fill, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ Size = UDim2.fromScale(math.min(qty / MAX_BAR, 1), 1) }):Play()
+
+				makeRemoveButton(row, def, 1, 296)
+				makeRemoveButton(row, def, 3, 352)
+			end
+		end
+		emptyLabel.Visible = (shown == 0)
+	end
+
+	for i, def in ipairs(defs) do
+		local btn = make("TextButton", {
+			Size = UDim2.new(0.25, -5, 1, 0), BackgroundColor3 = Color3.fromRGB(64, 76, 102),
+			Text = "+ " .. def.name, TextColor3 = Color3.new(1, 1, 1),
+			Font = Enum.Font.GothamBold, TextSize = 15, LayoutOrder = i,
+		}, addBar)
+		corner(btn, 8)
+		btn.Activated:Connect(function()
+			request("add", def.name, 1)
+		end)
+	end
+
+	changedEvent.OnClientEvent:Connect(function(newItems)
+		items = newItems
+		refresh()
+	end)
+
+	local ok, current = actionFn:InvokeServer("get")
+	if ok then items = current end
+	refresh()
+end
+
+---------------------------------------------------------------------
+-- Entry point: runs whichever half matches where it was called
+---------------------------------------------------------------------
+return function()
+	if RunService:IsServer() then
+		runServer()
+	else
+		runClient()
+	end
+end
