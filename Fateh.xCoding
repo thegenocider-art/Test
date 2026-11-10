@@ -1,0 +1,16 @@
+-- Spin Script for Roblox (100,000 Speed)
+local player = game.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Create a BodyAngularVelocity for continuous fast spinning
+local bav = Instance.new("BodyAngularVelocity")
+bav.Name = "SpinBot"
+bav.MaxTorque = Vector3.new(0, math.huge, 0) -- Only spin on the Y axis (yaw)
+bav.AngularVelocity = Vector3.new(0, 100000, 0) -- 100,000 rotational speed
+bav.Parent = humanoidRootPart
+
+-- Clean up if the character dies or respawns
+character.Humanoid.Died:Connect(function()
+    bav:Destroy()
+end)
